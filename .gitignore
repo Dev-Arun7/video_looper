@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+temp/
+*.mp4
+*.mkv
+*.avi

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Video Looper</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Video Looper</h1>
+        
+        <!-- File selection area -->
+        <div class="section">
+            <h3>Select Video Files</h3>
+            <!-- Single browse button - can select one or multiple files -->
+            <button id="selectFiles">Browse Files</button>
+            <div id="fileList"></div>
+        </div>
+
+        <!-- Target duration input -->
+        <div class="section">
+            <h3>Target Duration</h3>
+            <input type="number" id="targetHours" value="10" min="1" max="100">
+            <label>hours</label>
+        </div>
+
+        <!-- Random order checkbox (only shown when multiple files selected) -->
+        <div class="section" id="randomSection" style="display:none;">
+            <label>
+                <input type="checkbox" id="randomOrder"> Randomize clip order
+            </label>
+        </div>
+
+        <!-- Start button -->
+        <button id="startBtn" class="primary-btn">Start Processing</button>
+
+        <!-- Progress section (hidden initially) -->
+        <div id="progressSection" style="display:none;">
+            <h3>Progress</h3>
+            <div class="progress-item">
+                <span>Step 1: Creating video</span>
+                <progress id="progress1" max="100" value="0"></progress>
+                <span id="progress1Text">0%</span>
+            </div>
+            <div class="progress-item">
+                <span>Step 2: Optimizing for fast playback</span>
+                <progress id="progress2" max="100" value="0"></progress>
+                <span id="progress2Text">0%</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

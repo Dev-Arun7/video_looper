@@ -22,6 +22,9 @@ function createWindow() {
     
     // Load the HTML file into the window
     win.loadFile(path.join(__dirname, 'index.html'));
+    
+    // Open DevTools to see errors
+    win.webContents.openDevTools();
 }
 
 // When Electron is ready, create the window

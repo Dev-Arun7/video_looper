@@ -1,19 +1,29 @@
-
+#!/usr/bin/env python3
 import os
 import sys
+import json
 import math
 import shlex
+import random
 import tempfile
 import subprocess
 from pathlib import Path
-from shutil import disk_usage
-
 
 # =========================
-# USER VARIABLES (edit these)
+# Progress reporting helper
 # =========================
-SOURCE_PATH = "/media/arun/EFFF-548F/YouTube/Master_Videos/04/Nested Sequence 01.mp4"  # <-- set your source video file path
-TARGET_HOURS = 6                  # <-- e.g., 10, 5, etc.
+def report_progress(stage, percent, message=""):
+    """
+    Output progress in JSON format for Electron to parse
+    Stage 1 = creating video, Stage 2 = optimizing
+    """
+    progress_data = {
+        "stage": stage,
+        "percent": percent,
+        "message": message
+    }
+    # Print to stdout as JSON (Electron will read this)
+    print(f"PROGRESS:{json.dumps(progress_data)}", flush=True)
 
 # =========================
 # Helpers
@@ -26,7 +36,6 @@ def require_cmd(cmd: str) -> None:
 
 def ffprobe_duration_seconds(src: str) -> float:
     """Return duration (seconds) using ffprobe."""
-    # Uses format duration which is usually reliable for a single file
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
@@ -42,46 +51,56 @@ def ffprobe_duration_seconds(src: str) -> float:
     except ValueError:
         raise RuntimeError(f"Could not parse duration from ffprobe output: {val!r}")
 
+def ffprobe_resolution(src: str) -> tuple:
+    """Return (width, height) using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "csv=p=0",
+        src
+    ]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"ffprobe resolution check failed:\n{p.stderr.strip()}")
+    try:
+        w, h = p.stdout.strip().split(',')
+        return (int(w), int(h))
+    except:
+        raise RuntimeError(f"Could not parse resolution: {p.stdout.strip()}")
+
 def hms(seconds: float) -> str:
+    """Convert seconds to HH:MM:SS.SS format."""
     seconds = max(0, float(seconds))
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = seconds % 60
-    # show seconds with 2 decimals to feel responsive
     return f"{h:02d}:{m:02d}:{s:05.2f}"
 
-
-def estimate_output_size_bytes(src: str, src_seconds: float, target_seconds: float) -> int:
-    src_size = os.path.getsize(src)  # bytes
-    return int(src_size * (target_seconds / src_seconds))
-
-def check_space_or_exit(output_dir: str, required_bytes: int, margin_pct: int = 10) -> None:
-    free_bytes = disk_usage(output_dir).free
-    needed = int(required_bytes * (1 + margin_pct / 100))
-
-    print(f"Estimated output size: {required_bytes/1024/1024/1024:.2f} GB")
-    print(f"Free space available: {free_bytes/1024/1024/1024:.2f} GB")
-    print(f"Required (with {margin_pct}% margin): {needed/1024/1024/1024:.2f} GB")
-
-    if free_bytes < needed:
-        raise SystemExit("Not enough disk space. Free space or change output folder.")
-
-def build_concat_list_file(src: str, repeats: int, list_path: str) -> None:
+def build_concat_list_file(sources: list, repeats: int, list_path: str, randomize: bool = False) -> None:
     """
     Build an ffmpeg concat demuxer list file.
-    We use absolute paths and safe=0 in ffmpeg call.
+    sources: list of absolute file paths
+    repeats: how many times to repeat the entire sequence
+    randomize: if True, shuffle order each loop
     """
-    src_abs = str(Path(src).resolve())
     with open(list_path, "w", encoding="utf-8") as f:
         for _ in range(repeats):
-            # ffmpeg concat demuxer format
-            f.write(f"file '{src_abs}'\n")
+            # If randomize, shuffle the list each iteration
+            if randomize:
+                files_order = sources.copy()
+                random.shuffle(files_order)
+            else:
+                # Alphabetical order (sources are already sorted)
+                files_order = sources
+            
+            for src in files_order:
+                f.write(f"file '{src}'\n")
 
-def run_ffmpeg_with_progress(cmd, target_seconds: float) -> int:
+def run_ffmpeg_stage1(cmd, target_seconds: float) -> int:
     """
-    Run ffmpeg and print progress percentage based on out_time_ms from -progress.
+    Run ffmpeg and report progress for Stage 1 (creating video).
     """
-    # line-buffered text reading
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -95,75 +114,153 @@ def run_ffmpeg_with_progress(cmd, target_seconds: float) -> int:
     try:
         for line in proc.stdout:
             line = line.strip()
-            # ffmpeg -progress outputs key=value lines like out_time_ms=12345678
+            # Parse ffmpeg progress output
             if line.startswith("out_time_ms="):
                 try:
                     out_ms = int(line.split("=", 1)[1])
                     out_sec = out_ms / 1_000_000.0
                     pct = min(100.0, (out_sec / target_seconds) * 100.0) if target_seconds > 0 else 100.0
 
-                    # Print only when it changes enough to avoid spamming
+                    # Report progress to Electron
                     if pct - last_pct >= 0.5 or pct >= 100.0:
                         last_pct = pct
-                        print(f"\rWorking... {pct:6.2f}%  ({hms(out_sec)} / {hms(target_seconds)})", end="", flush=True)
+                        report_progress(1, pct, f"{hms(out_sec)} / {hms(target_seconds)}")
                 except Exception:
                     pass
 
-            # If you want to see ffmpeg logs, uncomment:
-            # else:
-            #     print("\n" + line)
-
         rc = proc.wait()
-        print()  # newline after the \r progress line
         return rc
     finally:
         if proc.stdout:
             proc.stdout.close()
 
+def get_available_disk_space(path: str) -> int:
+    """Return available disk space in bytes for the given path."""
+    stat = os.statvfs(os.path.dirname(path))
+    # Available space = fragment size * available fragments
+    return stat.f_bavail * stat.f_frsize
+
+def estimate_output_size(source_files: list, target_seconds: float) -> int:
+    """
+    Estimate output file size based on source files' bitrate.
+    Returns estimated size in bytes.
+    """
+    total_size = 0
+    total_duration = 0.0
+    
+    for src in source_files:
+        # Get file size
+        total_size += os.path.getsize(src)
+        # Get duration
+        total_duration += ffprobe_duration_seconds(src)
+    
+    if total_duration <= 0:
+        raise RuntimeError("Invalid total duration")
+    
+    # Calculate average bitrate (bytes per second)
+    avg_bitrate = total_size / total_duration
+    
+    # Estimate output size
+    estimated_size = int(avg_bitrate * target_seconds)
+    
+    # Add 15% buffer for overhead
+    return int(estimated_size * 1.15)
+
 # =========================
-#         Main
+# Main
 # =========================
 def main():
+    # Check for ffmpeg and ffprobe
     require_cmd("ffmpeg")
     require_cmd("ffprobe")
 
-    src = SOURCE_PATH
-    if not src or not os.path.isfile(src):
-        print(f"ERROR: SOURCE_PATH does not exist or is not a file: {src}", file=sys.stderr)
+    # Parse command-line arguments from Electron
+    # Expected format: python video_processor.py <files_json> <hours> <randomize> <output_path>
+    if len(sys.argv) < 5:
+        print("Usage: video_processor.py <files_json> <hours> <randomize> <output_path>", file=sys.stderr)
         sys.exit(1)
 
-    if TARGET_HOURS <= 0:
-        print("ERROR: TARGET_HOURS must be > 0", file=sys.stderr)
+    files_json = sys.argv[1]  # JSON array of file paths
+    target_hours = float(sys.argv[2])
+    randomize = sys.argv[3].lower() == 'true'
+    output_path = sys.argv[4]
+
+    # Parse file list
+    try:
+        source_files = json.loads(files_json)
+    except:
+        print("ERROR: Invalid files JSON", file=sys.stderr)
         sys.exit(1)
 
-    target_seconds = float(TARGET_HOURS) * 3600.0
-    src_seconds = ffprobe_duration_seconds(src)
-    if src_seconds <= 0:
-        print("ERROR: Source duration seems invalid (<=0).", file=sys.stderr)
+    # Validate files exist
+    for f in source_files:
+        if not os.path.isfile(f):
+            print(f"ERROR: File not found: {f}", file=sys.stderr)
+            sys.exit(1)
+
+    # Sort files alphabetically (if not randomizing, this is the base order)
+    source_files_abs = [str(Path(f).resolve()) for f in sorted(source_files)]
+
+    # Check if multiple files have different resolutions
+    if len(source_files_abs) > 1:
+        resolutions = [ffprobe_resolution(f) for f in source_files_abs]
+        if len(set(resolutions)) > 1:
+            # Different resolutions detected - would need re-encoding
+            print("ERROR: Videos have different resolutions. Re-encoding not yet implemented.", file=sys.stderr)
+            print(f"Resolutions found: {resolutions}", file=sys.stderr)
+            sys.exit(1)
+
+    # Calculate total duration of all source files
+    total_source_duration = sum(ffprobe_duration_seconds(f) for f in source_files_abs)
+    
+    if total_source_duration <= 0:
+        print("ERROR: Source duration is invalid.", file=sys.stderr)
         sys.exit(1)
 
-    repeats = int(math.ceil(target_seconds / src_seconds))
-    out_dir = str(Path(src).resolve().parent)
-    out_path = os.path.join(out_dir, f"final_video_{TARGET_HOURS}_hours.mp4")
+    # Calculate how many loops needed
+    target_seconds = target_hours * 3600.0
+    repeats = int(math.ceil(target_seconds / total_source_duration))
 
-    print(f"Source: {src}")
-    print(f"Source duration: {hms(src_seconds)}")
-    print(f"Target duration: {hms(target_seconds)}")
-    print(f"Repeats needed: {repeats}")
-    print(f"Output: {out_path}")
-    print("Mode: stream copy (no re-encode) -> same quality/resolution/codec")
+    # Estimate output file size using accurate method
+    print("INFO: Estimating output size...", file=sys.stderr)
+    estimated_size = estimate_output_size(source_files_abs, target_seconds)
+    estimated_size_gb = estimated_size / (1024**3)
 
-    required = estimate_output_size_bytes(src, src_seconds, target_seconds)
-    check_space_or_exit(out_dir, required, margin_pct=10)
+    # Check available disk space
+    available_space = get_available_disk_space(output_path)
+    available_space_gb = available_space / (1024**3)
 
-    # Create temporary concat list
+    print(f"INFO: Estimated output size: {estimated_size_gb:.2f} GB", file=sys.stderr)
+    print(f"INFO: Available disk space: {available_space_gb:.2f} GB", file=sys.stderr)
+
+    # DEBUG output
+    print(f"DEBUG: estimated_size = {estimated_size} bytes", file=sys.stderr)
+    print(f"DEBUG: available_space = {available_space} bytes", file=sys.stderr)
+    print(f"DEBUG: Need {estimated_size + 1024**3} bytes (with 1GB buffer)", file=sys.stderr)
+
+    # Check if enough space (need estimated size + 1GB buffer)
+    if available_space < (estimated_size + 1024**3):
+        print(f"ERROR: Insufficient disk space!", file=sys.stderr)
+        print(f"ERROR: Need {estimated_size_gb + 1:.2f} GB, but only {available_space_gb:.2f} GB available", file=sys.stderr)
+        print(f"ERROR: Please free up space or choose different output location", file=sys.stderr)
+        sys.exit(1)
+
+    # Report initial info
+    print(f"INFO: Processing {len(source_files_abs)} file(s)", file=sys.stderr)
+    print(f"INFO: Target duration: {hms(target_seconds)}", file=sys.stderr)
+    print(f"INFO: Loops needed: {repeats}", file=sys.stderr)
+    print(f"INFO: Randomize: {randomize}", file=sys.stderr)
+    print(f"INFO: Output: {output_path}", file=sys.stderr)
+
+    # Create concat list file
     with tempfile.TemporaryDirectory() as td:
         list_file = os.path.join(td, "concat_list.txt")
-        build_concat_list_file(src, repeats, list_file)
+        build_concat_list_file(source_files_abs, repeats, list_file, randomize)
 
-        # ffmpeg concat demuxer + stream copy + trim to target duration
-        # -progress pipe:1 gives machine-readable progress
-        # -nostats keeps it cleaner
+        # Start Stage 1: Creating video
+        report_progress(1, 0, "Starting...")
+
+        # ffmpeg command
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -174,25 +271,41 @@ def main():
             "-t", str(target_seconds),
             "-c", "copy",
             "-movflags", "+faststart",
-            "-y",  # overwrite output if exists
+            "-y",
             "-progress", "pipe:1",
-            out_path
+            output_path
         ]
 
-        rc = run_ffmpeg_with_progress(cmd, target_seconds)
+        # Run Stage 1 with progress tracking
+        rc = run_ffmpeg_stage1(cmd, target_seconds)
+        
         if rc != 0:
-            print("ERROR: ffmpeg failed. This can happen if the input MP4 has timestamp issues.")
-            print("Try re-muxing the source once, then rerun:")
-            print(f"  ffmpeg -i {shlex.quote(src)} -c copy -movflags +faststart remuxed.mp4")
+            print("ERROR: ffmpeg failed.", file=sys.stderr)
             sys.exit(rc)
 
-    print("Done ✅")
+        # Stage 1 complete
+        report_progress(1, 100, "Complete")
+
+        # Stage 2: The faststart process happens DURING the ffmpeg call
+        # So we just report it's done
+        report_progress(2, 0, "Finalizing...")
+
+        # Small delay to show stage 2 started
+        import time
+        time.sleep(0.1)
+
+        # Check if file was created successfully
+        if not os.path.exists(output_path):
+            print("ERROR: Output file was not created", file=sys.stderr)
+            sys.exit(1)
+
+        actual_size = os.path.getsize(output_path)
+        report_progress(2, 100, f"Complete - {actual_size / (1024**3):.2f} GB")
+
+
+    # Final success message
+    print(f"SUCCESS: Output saved to {output_path}", file=sys.stderr)
+    report_progress(2, 100, "Complete")
 
 if __name__ == "__main__":
     main()
-
-
-# ---------------------------
-#        10-02-2026
-#    Arun Balakrishnan
-# ---------------------------

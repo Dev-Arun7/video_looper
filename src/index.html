@@ -20,8 +20,18 @@
         <!-- Target duration input -->
         <div class="section">
             <h3>Target Duration</h3>
-            <input type="number" id="targetHours" value="10" min="1" max="100">
+            <input type="number" id="targetHours" value="10" min="0.01" max="100" step="0.01">
             <label>hours</label>
+        </div>
+
+        <!-- Output section (shown after file selection) -->
+        <div class="section" id="outputSection" style="display:none;">
+            <h3>Output</h3>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="text" id="outputPath" readonly style="flex: 1; padding: 8px; background: #f5f5f5;">
+                <button id="changeOutputBtn">Change</button>
+            </div>
+            <div id="outputInfo" style="margin-top: 10px; color: #666; font-size: 14px;"></div>
         </div>
 
         <!-- Random order checkbox (only shown when multiple files selected) -->
@@ -46,6 +56,9 @@
                 <span>Step 2: Optimizing for fast playback</span>
                 <progress id="progress2" max="100" value="0"></progress>
                 <span id="progress2Text">0%</span>
+                <div id="progress2Note" style="font-size: 12px; color: #888; margin-top: 5px; display: none;">
+                    Please wait... This may take several minutes on slow drives.
+                </div>
             </div>
         </div>
     </div>

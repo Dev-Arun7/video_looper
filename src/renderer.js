@@ -17,8 +17,7 @@ const startBtn = document.getElementById('startBtn');
 const progressSection = document.getElementById('progressSection');
 const progress1 = document.getElementById('progress1');
 const progress1Text = document.getElementById('progress1Text');
-const progress2 = document.getElementById('progress2');
-const progress2Text = document.getElementById('progress2Text');
+const timeRemainingSpan = document.getElementById('timeRemaining');
 const randomSection = document.getElementById('randomSection');
 const randomCheckbox = document.getElementById('randomOrder');
 
@@ -136,7 +135,7 @@ selectFilesBtn.addEventListener('click', async () => {
 
         // Display selected file names
         fileListDiv.innerHTML = selectedFiles
-            .map(f => `<div>✓ ${f.split('/').pop()}</div>`)
+            .map(f => `<div>âœ“ ${f.split('/').pop()}</div>`)
             .join('');
 
         // Show/hide random checkbox
@@ -154,8 +153,7 @@ selectFilesBtn.addEventListener('click', async () => {
         progressSection.style.display = 'none';
         progress1.value = 0;
         progress1Text.textContent = '0%';
-        progress2.value = 0;
-        progress2Text.textContent = '0%';
+timeRemainingSpan.textContent = 'Waiting...';
         startBtn.disabled = false;
     }
 });
@@ -220,8 +218,7 @@ startBtn.addEventListener('click', async () => {
     // Reset progress bars
     progress1.value = 0;
     progress1Text.textContent = '0%';
-    progress2.value = 0;
-    progress2Text.textContent = '0%';
+timeRemainingSpan.textContent = 'Waiting...';
 
     // Show progress section
     progressSection.style.display = 'block';
@@ -251,26 +248,41 @@ function runPythonProcessor(files, hours, randomize, outputPath) {
     pythonProcess.stdout.on('data', (data) => {
         const output = data.toString();
         const lines = output.split('\n');
-        
+
         lines.forEach(line => {
             if (line.startsWith('PROGRESS:')) {
                 try {
                     const progressJson = line.substring(9);
                     const progress = JSON.parse(progressJson);
-                    
+
                     if (progress.stage === 1) {
                         progress1.value = progress.percent;
                         progress1Text.textContent = Math.round(progress.percent) + '%';
-                        
-                        if (progress.percent >= 99.5) {
-                            document.getElementById('progress2Note').style.display = 'block';
-                        }
+
                     } else if (progress.stage === 2) {
-                        progress2.value = progress.percent;
-                        progress2Text.textContent = Math.round(progress.percent) + '%';
+                        // Stage 2: Only update timer, no progress bar
+                        
+                        // Handle time estimation
+                        if (progress.message) {
+                            try {
+                                const timeData = JSON.parse(progress.message);
+                                const seconds = timeData.estimatedSeconds;
+                                
+                                // Format time as MM:SS
+                                const minutes = Math.floor(seconds / 60);
+                                const secs = seconds % 60;
+                                const timeStr = `${minutes}:${secs.toString().padStart(2, '0')}`;
+                                
+                                timeRemainingSpan.textContent = 
+                                    seconds > 0 ? `${timeStr} remaining` : 'Finalizing...';
+                            } catch (e) {
+                                // Completion message
+                                timeRemainingSpan.textContent = 'Complete!';
+                            }
+                        }
                         
                         if (progress.percent >= 99.5) {
-                            document.getElementById('progress2Note').style.display = 'none';
+                            timeRemainingSpan.textContent = 'Complete!';
                         }
                     }
                 } catch (e) {
@@ -284,7 +296,7 @@ function runPythonProcessor(files, hours, randomize, outputPath) {
     pythonProcess.stderr.on('data', (data) => {
         const message = data.toString();
         console.log('Python:', message);
-        
+
         // Collect ERROR messages for user display
         if (message.includes('ERROR:')) {
             errorMessages.push(message.replace('ERROR:', '').trim());
@@ -294,21 +306,21 @@ function runPythonProcessor(files, hours, randomize, outputPath) {
     // When Python process exits
     pythonProcess.on('close', (code) => {
         if (code === 0) {
-            alert(`✅ Processing complete!\n\nVideo saved to:\n${outputPath}`);
+            alert(`âœ… Processing complete!\n\nVideo saved to:\n${outputPath}`);
         } else {
             // Show specific error messages from Python
-            const errorText = errorMessages.length > 0 
+            const errorText = errorMessages.length > 0
                 ? errorMessages.join('\n')
                 : 'Check console for details.';
-            alert(`❌ Processing failed!\n\n${errorText}`);
+            alert(`âŒ Processing failed!\n\n${errorText}`);
         }
-        
+
         startBtn.disabled = false;
     });
 
     // Handle process errors
     pythonProcess.on('error', (err) => {
-        alert(`❌ Failed to start Python process:\n${err.message}\n\nMake sure Python 3 is installed.`);
+        alert(`âŒ Failed to start Python process:\n${err.message}\n\nMake sure Python 3 is installed.`);
         startBtn.disabled = false;
     });
 }

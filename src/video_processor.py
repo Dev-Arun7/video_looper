@@ -163,8 +163,8 @@ def estimate_output_size(source_files: list, target_seconds: float) -> int:
     # Estimate output size
     estimated_size = int(avg_bitrate * target_seconds)
     
-    # Add 15% buffer for overhead
-    return int(estimated_size * 1.15)
+    # Add 10% buffer for overhead
+    return int(estimated_size * 1.1)
 
 # =========================
 # Main
@@ -286,18 +286,61 @@ def main():
         # Stage 1 complete
         report_progress(1, 100, "Complete")
 
-        # Stage 2: The faststart process happens DURING the ffmpeg call
-        # So we just report it's done
-        report_progress(2, 0, "Finalizing...")
+        # Stage 2: Monitor faststart progress by tracking file size
+        report_progress(2, 0, "Starting optimization...")
 
-        # Small delay to show stage 2 started
+        # Get initial file size
         import time
-        time.sleep(0.1)
+        start_time = time.time()
+        last_size = 0
+        last_update_time = start_time
 
-        # Check if file was created successfully
-        if not os.path.exists(output_path):
-            print("ERROR: Output file was not created", file=sys.stderr)
-            sys.exit(1)
+        # Monitor file size growth to estimate remaining time
+        while True:
+            time.sleep(1)  # Check every second
+            
+            if not os.path.exists(output_path):
+                continue
+            
+            current_size = os.path.getsize(output_path)
+            current_time = time.time()
+            elapsed = current_time - start_time
+            
+            # Calculate progress percentage
+            percent = min(100.0, (current_size / estimated_size) * 100.0) if estimated_size > 0 else 0
+            
+            # Calculate write speed (bytes per second)
+            time_since_update = current_time - last_update_time
+            if time_since_update > 0:
+                bytes_written = current_size - last_size
+                write_speed = bytes_written / time_since_update  # bytes/sec
+                
+                # Estimate remaining time
+                bytes_remaining = estimated_size - current_size
+                if write_speed > 0 and bytes_remaining > 0:
+                    estimated_seconds = int(bytes_remaining / write_speed)
+                else:
+                    estimated_seconds = 0
+                
+                # Send progress with estimated time
+                report_progress(2, percent, json.dumps({
+                    "currentGB": round(current_size / (1024**3), 2),
+                    "totalGB": round(estimated_size / (1024**3), 2),
+                    "estimatedSeconds": estimated_seconds
+                }))
+                
+                last_size = current_size
+                last_update_time = current_time
+            
+            # Check if complete
+            if percent >= 99.5:
+                report_progress(2, 100, f"Complete - {current_size / (1024**3):.2f} GB")
+                break
+            
+            # Safety timeout (1 hour max)
+            if elapsed > 3600:
+                print("WARNING: Stage 2 timeout after 1 hour", file=sys.stderr)
+                break
 
         actual_size = os.path.getsize(output_path)
         report_progress(2, 100, f"Complete - {actual_size / (1024**3):.2f} GB")
